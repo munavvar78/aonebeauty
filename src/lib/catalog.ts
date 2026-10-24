@@ -63,9 +63,10 @@ export async function listProducts(
   }
 
   const { data, error } = await query.order("name");
-  if (error || !data) {
+  if (error || data == null) {
     return getProductsByCategory(category);
   }
+  // Prefer live DB rows even when empty — don't silently show seed catalog
   return (data as DbProduct[]).map(mapDbProduct);
 }
 
@@ -84,10 +85,12 @@ export async function listFeaturedProducts(): Promise<Product[]> {
     .eq("featured", true)
     .order("name");
 
-  if (error || !data || data.length === 0) {
-    return getFeaturedProducts();
+  if (!error && data && data.length > 0) {
+    return (data as DbProduct[]).map(mapDbProduct);
   }
-  return (data as DbProduct[]).map(mapDbProduct);
+
+  // No featured flags — show the same live catalog as the shop
+  return listProducts("all");
 }
 
 export async function findProductBySlug(

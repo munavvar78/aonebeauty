@@ -3,6 +3,9 @@ import { ProductCard } from "@/components/ProductCard";
 import { CATEGORIES, type ProductCategory } from "@/data/products";
 import { listProducts } from "@/lib/catalog";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 type ShopPageProps = {
   searchParams: Promise<{ category?: string }>;
 };

@@ -2,13 +2,17 @@ import Link from "next/link";
 import { ProductCard } from "@/components/ProductCard";
 import { OffersStrip } from "@/components/OffersStrip";
 import { Reveal } from "@/components/Reveal";
-import { listFeaturedProducts } from "@/lib/catalog";
+import { listProducts } from "@/lib/catalog";
 import { listActiveCoupons } from "@/lib/coupons";
 import { SITE } from "@/data/site";
 
+/** Always read live catalog from Supabase (admin edits show up immediately). */
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export default async function HomePage() {
-  const [featured, coupons] = await Promise.all([
-    listFeaturedProducts(),
+  const [products, coupons] = await Promise.all([
+    listProducts("all"),
     listActiveCoupons(),
   ]);
 
@@ -97,9 +101,9 @@ export default async function HomePage() {
             <Reveal>
               <div className="flex flex-wrap items-end justify-between gap-4">
                 <div>
-                  <p className="label-nav text-rose">Featured</p>
+                  <p className="label-nav text-rose">Shop</p>
                   <h2 className="mt-2 font-display text-4xl italic sm:text-6xl">
-                    Reach for these first
+                    Our products
                   </h2>
                 </div>
                 <Link
@@ -111,7 +115,7 @@ export default async function HomePage() {
               </div>
             </Reveal>
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-              {featured.map((product, index) => (
+              {products.map((product, index) => (
                 <Reveal key={product.id} delayMs={index * 90}>
                   <ProductCard product={product} />
                 </Reveal>
