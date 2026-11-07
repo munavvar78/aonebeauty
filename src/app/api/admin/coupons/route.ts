@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/admin";
-import { createServiceRoleClient } from "@/lib/supabase/server";
 import { normalizeCouponCode } from "@/domain/coupons";
+import { isMongoConfigured } from "@/lib/mongo";
+import {
+  insertCoupon,
+  listAllCouponsAdmin,
+  setCouponActive,
+} from "@/lib/repositories/coupons";
 
 export async function GET() {
   const auth = await requireAdmin();
@@ -9,21 +14,30 @@ export async function GET() {
     return NextResponse.json({ error: auth.error }, { status: 401 });
   }
 
-  const db = createServiceRoleClient();
-  if (!db) {
-    return NextResponse.json({ error: "Service role not configured" }, { status: 500 });
+  if (!isMongoConfigured()) {
+    return NextResponse.json(
+      { error: "MongoDB is not configured" },
+      { status: 500 },
+    );
   }
 
-  const { data, error } = await db
-    .from("coupons")
-    .select("*")
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
-  }
-
-  return NextResponse.json({ coupons: data ?? [] });
+  const docs = await listAllCouponsAdmin();
+  return NextResponse.json({
+    coupons: docs.map((c) => ({
+      id: c._id.toHexString(),
+      code: c.code,
+      occasion_label: c.occasionLabel,
+      description: c.description,
+      discount_type: c.discountType,
+      percent_off: c.percentOff,
+      amount_paise: c.amountPaise,
+      min_order_paise: c.minOrderPaise,
+      starts_at: c.startsAt,
+      ends_at: c.endsAt,
+      is_active: c.isActive,
+      created_at: c.createdAt,
+    })),
+  });
 }
 
 export async function POST(request: Request) {
@@ -32,9 +46,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: auth.error }, { status: 401 });
   }
 
-  const db = createServiceRoleClient();
-  if (!db) {
-    return NextResponse.json({ error: "Service role not configured" }, { status: 500 });
+  if (!isMongoConfigured()) {
+    return NextResponse.json(
+      { error: "MongoDB is not configured" },
+      { status: 500 },
+    );
   }
 
   const body = await request.json();
@@ -45,25 +61,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing coupon fields" }, { status: 400 });
   }
 
-  const row = {
-    code,
-    occasion_label: String(body.occasionLabel),
-    description: String(body.description ?? ""),
-    discount_type: discountType,
-    percent_off: discountType === "percent" ? Number(body.percentOff) : null,
-    amount_paise: discountType === "flat" ? Number(body.amountPaise) : null,
-    min_order_paise: Number(body.minOrderPaise ?? 0),
-    starts_at: body.startsAt || null,
-    ends_at: body.endsAt || null,
-    is_active: body.isActive !== false,
-  };
-
-  const { data, error } = await db.from("coupons").insert(row).select("id").single();
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+  try {
+    const id = await insertCoupon({
+      code,
+      occasionLabel: String(body.occasionLabel),
+      description: String(body.description ?? ""),
+      discountType,
+      percentOff: discountType === "percent" ? Number(body.percentOff) : null,
+      amountPaise: discountType === "flat" ? Number(body.amountPaise) : null,
+      minOrderPaise: Number(body.minOrderPaise ?? 0),
+      startsAt: body.startsAt ? new Date(body.startsAt) : null,
+      endsAt: body.endsAt ? new Date(body.endsAt) : null,
+      isActive: body.isActive !== false,
+    });
+    return NextResponse.json({ id });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Create failed" },
+      { status: 400 },
+    );
   }
-
-  return NextResponse.json({ id: data.id });
 }
 
 export async function PATCH(request: Request) {
@@ -72,9 +89,11 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: auth.error }, { status: 401 });
   }
 
-  const db = createServiceRoleClient();
-  if (!db) {
-    return NextResponse.json({ error: "Service role not configured" }, { status: 500 });
+  if (!isMongoConfigured()) {
+    return NextResponse.json(
+      { error: "MongoDB is not configured" },
+      { status: 500 },
+    );
   }
 
   const body = await request.json();
@@ -82,13 +101,9 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "Missing id" }, { status: 400 });
   }
 
-  const { error } = await db
-    .from("coupons")
-    .update({ is_active: Boolean(body.isActive) })
-    .eq("id", body.id);
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+  const ok = await setCouponActive(body.id, Boolean(body.isActive));
+  if (!ok) {
+    return NextResponse.json({ error: "Coupon not found" }, { status: 404 });
   }
 
   return NextResponse.json({ ok: true });

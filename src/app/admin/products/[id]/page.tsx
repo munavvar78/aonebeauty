@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/auth/admin";
-import { createServiceRoleClient } from "@/lib/supabase/server";
+import { isMongoConfigured } from "@/lib/mongo";
+import { findProductById } from "@/lib/repositories/products";
 import { ProductForm } from "@/components/admin/ProductForm";
 import { StockAdjustForm } from "@/components/admin/StockAdjustForm";
 import { ImageUploadForm } from "@/components/admin/ImageUploadForm";
@@ -15,15 +16,9 @@ export default async function EditProductPage({ params }: EditProductPageProps) 
   if (!auth.ok) redirect("/admin");
 
   const { id } = await params;
-  const db = createServiceRoleClient();
-  if (!db) notFound();
+  if (!isMongoConfigured()) notFound();
 
-  const { data: product } = await db
-    .from("products")
-    .select("*")
-    .eq("id", id)
-    .maybeSingle();
-
+  const product = await findProductById(id);
   if (!product) notFound();
 
   return (
@@ -32,18 +27,18 @@ export default async function EditProductPage({ params }: EditProductPageProps) 
       <ProductForm
         mode="edit"
         product={{
-          id: product.id,
+          id: product._id.toHexString(),
           slug: product.slug,
           name: product.name,
           description: product.description,
           category: product.category,
-          pricePaise: product.price_paise,
-          compareAtPricePaise: product.compare_at_price_paise ?? null,
-          lowStockThreshold: product.low_stock_threshold,
+          pricePaise: product.pricePaise,
+          compareAtPricePaise: product.compareAtPricePaise ?? null,
+          lowStockThreshold: product.lowStockThreshold,
           featured: product.featured,
-          isActive: product.is_active,
-          accentFrom: product.accent_from ?? "#f3d6cf",
-          accentTo: product.accent_to ?? "#c97b7b",
+          isActive: product.isActive,
+          accentFrom: product.accentFrom ?? "#f3d6cf",
+          accentTo: product.accentTo ?? "#c97b7b",
         }}
       />
       <div className="surface-card space-y-3 p-5">
@@ -51,13 +46,13 @@ export default async function EditProductPage({ params }: EditProductPageProps) 
         <p className="text-sm text-espresso-muted">
           On hand: {product.quantity}. Change quantity only through adjustments.
         </p>
-        <StockAdjustForm productId={product.id} />
+        <StockAdjustForm productId={product._id.toHexString()} />
       </div>
       <div className="surface-card space-y-3 p-5">
         <h3 className="font-display text-xl">Image</h3>
         <ImageUploadForm
-          productId={product.id}
-          currentImageUrl={productImagePublicUrl(product.image_path)}
+          productId={product._id.toHexString()}
+          currentImageUrl={productImagePublicUrl(product.imagePath)}
         />
       </div>
     </div>

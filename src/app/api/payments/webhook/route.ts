@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { applyRazorpayPayment } from "@/lib/payments/apply";
 import { verifyWebhookSignature } from "@/lib/razorpay/client";
-import { createServiceRoleClient } from "@/lib/supabase/server";
+import { findOrderByRazorpayOrderId } from "@/lib/repositories/orders";
 
 export async function POST(request: Request) {
   const rawBody = await request.text();
@@ -39,15 +39,8 @@ export async function POST(request: Request) {
     payload.payload?.order?.entity?.notes?.local_order_id;
 
   if (!localOrderId && razorpayOrderId) {
-    const db = createServiceRoleClient();
-    if (db) {
-      const { data } = await db
-        .from("orders")
-        .select("id")
-        .eq("razorpay_order_id", razorpayOrderId)
-        .maybeSingle();
-      localOrderId = data?.id;
-    }
+    const order = await findOrderByRazorpayOrderId(razorpayOrderId);
+    localOrderId = order?._id.toHexString();
   }
 
   if (!localOrderId || !razorpayOrderId || !paymentId) {

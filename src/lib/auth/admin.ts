@@ -1,27 +1,21 @@
 import { isAllowlistedAdmin } from "@/domain/admin";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { auth } from "@/lib/auth/config";
 
 export async function requireAdmin() {
-  const supabase = await createServerSupabaseClient();
-  if (!supabase) {
-    return { ok: false as const, error: "Supabase is not configured" };
-  }
+  const session = await auth();
+  const email = session?.user?.email;
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user?.email) {
+  if (!email) {
     return { ok: false as const, error: "Not signed in" };
   }
 
-  if (!isAllowlistedAdmin(user.email, process.env.ADMIN_EMAIL)) {
+  if (!isAllowlistedAdmin(email, process.env.ADMIN_EMAIL)) {
     return {
       ok: false as const,
-      error: `Signed in as ${user.email}, but ADMIN_EMAIL must match that address`,
-      user,
+      error: `Signed in as ${email}, but ADMIN_EMAIL must match that address`,
+      user: { email },
     };
   }
 
-  return { ok: true as const, user, supabase };
+  return { ok: true as const, user: { email } };
 }

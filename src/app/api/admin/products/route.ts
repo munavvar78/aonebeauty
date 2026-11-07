@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/admin";
-import { createServiceRoleClient } from "@/lib/supabase/server";
+import { isMongoConfigured } from "@/lib/mongo";
+import {
+  insertProduct,
+  updateProductFields,
+} from "@/lib/repositories/products";
+import { insertStockMovement } from "@/lib/repositories/stock";
 
 export async function POST(request: Request) {
   const auth = await requireAdmin();
@@ -8,10 +13,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: auth.error }, { status: 401 });
   }
 
-  const db = createServiceRoleClient();
-  if (!db) {
+  if (!isMongoConfigured()) {
     return NextResponse.json(
-      { error: "Service role client is not configured" },
+      { error: "MongoDB is not configured" },
       { status: 500 },
     );
   }
@@ -43,43 +47,42 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid product payload" }, { status: 400 });
   }
 
-  const { data, error } = await db
-    .from("products")
-    .insert({
+  try {
+    const id = await insertProduct({
       slug,
       name,
       description: description ?? "",
       category,
-      price_paise: pricePaise,
-      compare_at_price_paise:
+      pricePaise,
+      compareAtPricePaise:
         compareAtPricePaise === null || compareAtPricePaise === ""
           ? null
           : Number(compareAtPricePaise),
       quantity,
-      low_stock_threshold: lowStockThreshold,
+      lowStockThreshold,
       featured,
-      accent_from: accentFrom,
-      accent_to: accentTo,
-      is_active: isActive,
-      image_path: imagePath,
-    })
-    .select("id")
-    .single();
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
-  }
-
-  if (Number.isInteger(quantity) && quantity > 0) {
-    await db.from("stock_movements").insert({
-      product_id: data.id,
-      delta: quantity,
-      reason: "restock",
-      note: "Initial stock on create",
+      accentFrom,
+      accentTo,
+      isActive,
+      imagePath,
     });
-  }
 
-  return NextResponse.json({ id: data.id });
+    if (Number.isInteger(quantity) && quantity > 0) {
+      await insertStockMovement({
+        productId: id,
+        delta: quantity,
+        reason: "restock",
+        note: "Initial stock on create",
+      });
+    }
+
+    return NextResponse.json({ id });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Create failed" },
+      { status: 400 },
+    );
+  }
 }
 
 export async function PATCH(request: Request) {
@@ -88,10 +91,9 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: auth.error }, { status: 401 });
   }
 
-  const db = createServiceRoleClient();
-  if (!db) {
+  if (!isMongoConfigured()) {
     return NextResponse.json(
-      { error: "Service role client is not configured" },
+      { error: "MongoDB is not configured" },
       { status: 500 },
     );
   }
@@ -102,31 +104,6 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "Missing product id" }, { status: 400 });
   }
 
-  const update: Record<string, unknown> = {
-    updated_at: new Date().toISOString(),
-  };
-
-  if (fields.name !== undefined) update.name = fields.name;
-  if (fields.description !== undefined) update.description = fields.description;
-  if (fields.category !== undefined) update.category = fields.category;
-  if (fields.pricePaise !== undefined) update.price_paise = fields.pricePaise;
-  if (fields.compareAtPricePaise !== undefined) {
-    update.compare_at_price_paise =
-      fields.compareAtPricePaise === null || fields.compareAtPricePaise === ""
-        ? null
-        : Number(fields.compareAtPricePaise);
-  }
-  if (fields.lowStockThreshold !== undefined) {
-    update.low_stock_threshold = fields.lowStockThreshold;
-  }
-  if (fields.featured !== undefined) update.featured = fields.featured;
-  if (fields.isActive !== undefined) update.is_active = fields.isActive;
-  if (fields.accentFrom !== undefined) update.accent_from = fields.accentFrom;
-  if (fields.accentTo !== undefined) update.accent_to = fields.accentTo;
-  if (fields.imagePath !== undefined) update.image_path = fields.imagePath;
-  if (fields.slug !== undefined) update.slug = fields.slug;
-
-  // Quantity must never be set directly here — use /api/admin/stock.
   if (fields.quantity !== undefined) {
     return NextResponse.json(
       { error: "Set quantity via stock adjustment endpoint" },
@@ -134,10 +111,40 @@ export async function PATCH(request: Request) {
     );
   }
 
-  const { error } = await db.from("products").update(update).eq("id", id);
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
-  }
+  const update: Record<string, unknown> = {
+    updatedAt: new Date(),
+  };
 
-  return NextResponse.json({ ok: true });
+  if (fields.name !== undefined) update.name = fields.name;
+  if (fields.description !== undefined) update.description = fields.description;
+  if (fields.category !== undefined) update.category = fields.category;
+  if (fields.pricePaise !== undefined) update.pricePaise = fields.pricePaise;
+  if (fields.compareAtPricePaise !== undefined) {
+    update.compareAtPricePaise =
+      fields.compareAtPricePaise === null || fields.compareAtPricePaise === ""
+        ? null
+        : Number(fields.compareAtPricePaise);
+  }
+  if (fields.lowStockThreshold !== undefined) {
+    update.lowStockThreshold = fields.lowStockThreshold;
+  }
+  if (fields.featured !== undefined) update.featured = fields.featured;
+  if (fields.isActive !== undefined) update.isActive = fields.isActive;
+  if (fields.accentFrom !== undefined) update.accentFrom = fields.accentFrom;
+  if (fields.accentTo !== undefined) update.accentTo = fields.accentTo;
+  if (fields.imagePath !== undefined) update.imagePath = fields.imagePath;
+  if (fields.slug !== undefined) update.slug = fields.slug;
+
+  try {
+    const ok = await updateProductFields(id, update as never);
+    if (!ok) {
+      return NextResponse.json({ error: "Product not found" }, { status: 404 });
+    }
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Update failed" },
+      { status: 400 },
+    );
+  }
 }

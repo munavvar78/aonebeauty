@@ -1,6 +1,6 @@
 import type { Coupon } from "@/domain/coupons";
 
-/** Fallback occasion offers when Supabase coupons table is empty / offline. */
+/** Fallback occasion offers when MongoDB coupons are empty / offline. */
 export const SEED_COUPONS: Coupon[] = [
   {
     code: "WELCOME10",

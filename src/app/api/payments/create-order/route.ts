@@ -5,8 +5,16 @@ import { orderTotalFromItems } from "@/domain/orders";
 import { getProductStockMap } from "@/lib/catalog";
 import { applyCouponCode } from "@/lib/coupons";
 import { getRazorpayClient } from "@/lib/razorpay/client";
-import { createServiceRoleClient } from "@/lib/supabase/server";
+import { isMongoConfigured } from "@/lib/mongo";
 import { SEED_PRODUCTS } from "@/data/products";
+import {
+  findProductById,
+  findProductBySlugAny,
+} from "@/lib/repositories/products";
+import {
+  createOrder,
+  setOrderRazorpayOrderId,
+} from "@/lib/repositories/orders";
 
 type Body = {
   cart: Cart;
@@ -78,13 +86,12 @@ export async function POST(request: Request) {
   }
 
   const razorpay = getRazorpayClient();
-  const db = createServiceRoleClient();
 
-  if (!razorpay || !db) {
+  if (!razorpay || !isMongoConfigured()) {
     return NextResponse.json({
       mode: "demo",
       message:
-        "Configure Supabase and Razorpay env vars to create live test orders.",
+        "Configure MONGODB_URI and Razorpay env vars to create live test orders.",
       amountPaise: payablePaise,
       subtotalPaise,
       discountPaise,
@@ -97,45 +104,26 @@ export async function POST(request: Request) {
   const resolvedLines = [];
   for (const line of revalidated.lines) {
     let productId = line.productId;
-    const { data: byId } = await db
-      .from("products")
-      .select("id, quantity, price_paise, name, slug")
-      .eq("id", productId)
-      .maybeSingle();
+    let byId = await findProductById(productId);
 
     if (!byId) {
       const seed = SEED_PRODUCTS.find((p) => p.id === line.productId);
       if (seed) {
-        const { data: bySlug } = await db
-          .from("products")
-          .select("id, quantity, price_paise, name, slug")
-          .eq("slug", seed.slug)
-          .maybeSingle();
+        const bySlug = await findProductBySlugAny(seed.slug);
         if (!bySlug) {
           return NextResponse.json(
             { error: `Product ${line.name} is not in the database` },
             { status: 400 },
           );
         }
-        productId = bySlug.id;
-        if (bySlug.quantity < line.quantity) {
-          return NextResponse.json(
-            { error: `${line.name} has insufficient stock` },
-            { status: 409 },
-          );
-        }
-        resolvedLines.push({
-          ...line,
-          productId,
-          unitPricePaise: bySlug.price_paise,
-          name: bySlug.name,
-        });
-        continue;
+        productId = bySlug._id.toHexString();
+        byId = bySlug;
+      } else {
+        return NextResponse.json(
+          { error: `Unknown product ${line.productId}` },
+          { status: 400 },
+        );
       }
-      return NextResponse.json(
-        { error: `Unknown product ${line.productId}` },
-        { status: 400 },
-      );
     }
 
     if (byId.quantity < line.quantity) {
@@ -144,10 +132,11 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
+
     resolvedLines.push({
       ...line,
       productId,
-      unitPricePaise: byId.price_paise,
+      unitPricePaise: byId.pricePaise,
       name: byId.name,
     });
   }
@@ -176,61 +165,38 @@ export async function POST(request: Request) {
     );
   }
 
-  const { data: order, error: orderError } = await db
-    .from("orders")
-    .insert({
-      status: "pending",
-      guest_name: checkoutResult.value.name,
-      guest_phone: checkoutResult.value.phone,
-      guest_email: checkoutResult.value.email ?? null,
-      address: checkoutResult.value.address,
-      city: checkoutResult.value.city,
-      state: checkoutResult.value.state,
-      pincode: checkoutResult.value.pincode,
-      total_paise: finalPayable,
-      coupon_code: finalCoupon,
-      discount_paise: finalDiscount,
-    })
-    .select("id")
-    .single();
-
-  if (orderError || !order) {
-    return NextResponse.json(
-      { error: orderError?.message ?? "Could not create order" },
-      { status: 500 },
-    );
-  }
-
-  const { error: itemsError } = await db.from("order_items").insert(
-    resolvedLines.map((line) => ({
-      order_id: order.id,
-      product_id: line.productId,
+  const orderId = await createOrder({
+    guestName: checkoutResult.value.name,
+    guestPhone: checkoutResult.value.phone,
+    guestEmail: checkoutResult.value.email ?? null,
+    address: checkoutResult.value.address,
+    city: checkoutResult.value.city,
+    state: checkoutResult.value.state,
+    pincode: checkoutResult.value.pincode,
+    totalPaise: finalPayable,
+    discountPaise: finalDiscount,
+    couponCode: finalCoupon,
+    items: resolvedLines.map((line) => ({
+      productId: line.productId,
       name: line.name,
-      unit_price_paise: line.unitPricePaise,
+      unitPricePaise: line.unitPricePaise,
       quantity: line.quantity,
     })),
-  );
-
-  if (itemsError) {
-    return NextResponse.json({ error: itemsError.message }, { status: 500 });
-  }
+  });
 
   const razorpayOrder = await razorpay.orders.create({
     amount: finalPayable,
     currency: "INR",
-    receipt: order.id.slice(0, 40),
-    notes: { local_order_id: order.id },
+    receipt: orderId.slice(0, 40),
+    notes: { local_order_id: orderId },
   });
 
-  await db
-    .from("orders")
-    .update({ razorpay_order_id: razorpayOrder.id })
-    .eq("id", order.id);
+  await setOrderRazorpayOrderId(orderId, razorpayOrder.id);
 
   return NextResponse.json({
     mode: "live",
     keyId: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
-    localOrderId: order.id,
+    localOrderId: orderId,
     razorpayOrderId: razorpayOrder.id,
     amountPaise: finalPayable,
     subtotalPaise: resolvedSubtotal,

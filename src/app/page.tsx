@@ -6,7 +6,7 @@ import { listProducts } from "@/lib/catalog";
 import { listActiveCoupons } from "@/lib/coupons";
 import { SITE } from "@/data/site";
 
-/** Always read live catalog from Supabase (admin edits show up immediately). */
+/** Always read live catalog from MongoDB (admin edits show up immediately). */
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 

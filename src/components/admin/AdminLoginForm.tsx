@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import { createBrowserSupabaseClient } from "@/lib/supabase/client";
+import { signIn } from "next-auth/react";
 
 export function AdminLoginForm() {
   const [error, setError] = useState<string | null>(null);
@@ -16,33 +16,18 @@ export function AdminLoginForm() {
     const email = String(form.get("email") ?? "");
     const password = String(form.get("password") ?? "");
 
-    const supabase = createBrowserSupabaseClient();
-    if (!supabase) {
-      setError("Supabase is not configured");
-      setPending(false);
-      return;
-    }
-
-    const { data, error: signInError } = await supabase.auth.signInWithPassword({
+    const result = await signIn("credentials", {
       email,
       password,
+      redirect: false,
     });
 
-    if (signInError) {
-      setError(signInError.message);
+    if (result?.error) {
+      setError("Invalid email or password");
       setPending(false);
       return;
     }
 
-    if (!data.session) {
-      setError(
-        "Login returned no session. In Supabase Settings → API, copy the legacy anon (JWT) key into NEXT_PUBLIC_SUPABASE_ANON_KEY — not only the short publishable key.",
-      );
-      setPending(false);
-      return;
-    }
-
-    // Full navigation avoids stale .next RSC cache after auth cookies change.
     window.location.assign("/admin");
   }
 
@@ -50,21 +35,11 @@ export function AdminLoginForm() {
     <form onSubmit={onSubmit} className="surface-card space-y-4 p-6">
       <label className="block space-y-1 text-sm">
         <span className="label-nav">Email</span>
-        <input
-          name="email"
-          type="email"
-          required
-          className="field"
-        />
+        <input name="email" type="email" required className="field" />
       </label>
       <label className="block space-y-1 text-sm">
         <span className="label-nav">Password</span>
-        <input
-          name="password"
-          type="password"
-          required
-          className="field"
-        />
+        <input name="password" type="password" required className="field" />
       </label>
       {error && <p className="text-sm text-blush">{error}</p>}
       <button

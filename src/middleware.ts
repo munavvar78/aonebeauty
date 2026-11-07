@@ -1,51 +1,40 @@
-import { createServerClient, type CookieOptions } from "@supabase/ssr";
-import { NextResponse, type NextRequest } from "next/server";
-
-type CookieToSet = {
-  name: string;
-  value: string;
-  options: CookieOptions;
-};
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { getToken } from "next-auth/jwt";
+import { isAllowlistedAdmin } from "@/domain/admin";
 
 export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({
-    request: { headers: request.headers },
-  });
+  const { pathname } = request.nextUrl;
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) {
-    return response;
+  const isAdminApi = pathname.startsWith("/api/admin");
+  const isAdminPage =
+    pathname.startsWith("/admin") && pathname !== "/admin";
+
+  // Login page itself stays public; APIs always need a session.
+  if (!isAdminApi && !isAdminPage) {
+    return NextResponse.next();
   }
 
-  const supabase = createServerClient(url, key, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
-      },
-      setAll(cookiesToSet: CookieToSet[]) {
-        cookiesToSet.forEach(({ name, value }) => {
-          request.cookies.set(name, value);
-        });
-        response = NextResponse.next({
-          request: { headers: request.headers },
-        });
-        cookiesToSet.forEach(({ name, value, options }) => {
-          response.cookies.set(name, value, options);
-        });
-      },
-    },
+  const token = await getToken({
+    req: request,
+    secret: process.env.AUTH_SECRET,
   });
 
-  // Refresh the auth session so Server Components see the logged-in user.
-  await supabase.auth.getUser();
+  const email = token?.email ? String(token.email) : null;
+  const allowed =
+    email !== null && isAllowlistedAdmin(email, process.env.ADMIN_EMAIL);
 
-  return response;
+  if (!allowed) {
+    if (isAdminApi) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const loginUrl = new URL("/admin", request.url);
+    return NextResponse.redirect(loginUrl);
+  }
+
+  return NextResponse.next();
 }
 
 export const config = {
-  matcher: [
-    "/admin/:path*",
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
-  ],
+  matcher: ["/admin/:path*", "/api/admin/:path*"],
 };

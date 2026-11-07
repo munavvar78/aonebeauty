@@ -14,7 +14,7 @@ Aone Beauty is a small, aesthetic beauty e-commerce storefront with:
 - Quantity that can never go below zero
 - Occasion coupons (display + apply at checkout, discount in paise)
 - WhatsApp contact FAB for the owner (not a checkout replacement)
-- Product images via Supabase Storage on the storefront
+- Product images via AWS S3 on the storefront
 
 ## Non-goals (all phases)
 
@@ -32,11 +32,14 @@ Aone Beauty is a small, aesthetic beauty e-commerce storefront with:
 | --- | --- |
 | App | Next.js (App Router) + TypeScript |
 | Styling | Tailwind CSS + design tokens |
-| Data | Supabase (Postgres + Auth + Storage); Phase 1 seed fallback |
+| Data | MongoDB Atlas; Phase 1 seed fallback when `MONGODB_URI` missing |
+| Auth | Auth.js (Credentials) + bcrypt admin in Mongo |
+| Images | AWS S3 |
 | Payments | Razorpay (INR, paise) |
 | Tests | Vitest + Testing Library |
 | Local | `next dev` |
-| Host | Cloudflare Pages via OpenNext (documented in Phase 3) |
+| Host | Docker → Amazon ECR → AWS App Runner |
+| CI/CD | GitHub Actions (`ci.yml`, `deploy.yml`) |
 
 ## Brand and visual rules
 
@@ -54,8 +57,8 @@ Aone Beauty is a small, aesthetic beauty e-commerce storefront with:
 3. **Quantity cannot drop below 0.** Sold-out products cannot be purchased.
 4. **A Razorpay success screen is not proof of payment.** Stock drops only after server-side signature verification, once per payment id.
 5. **Race on last unit:** the conditional update `quantity >= requested` decides the winner. The loser is stored as `paid_out_of_stock` for a manual refund. No reservation cron in this version.
-6. **`RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, and the Supabase service role key never ship to the browser or git.** Only `.env.example` is committed.
-7. **Admin pages require the allowlisted Supabase user** (`ADMIN_EMAIL`). Guests never see them.
+6. **`RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `AUTH_SECRET`, `MONGODB_URI`, and AWS keys never ship to the browser or git.** Only `.env.example` is committed.
+7. **Admin pages require the allowlisted Auth.js user** (`ADMIN_EMAIL`). Guests never see them.
 8. **Business rules live in `src/domain/`** and receive unit tests before the screen that depends on them.
 9. **Do not start the next phase while the current phase’s tests fail.**
 
@@ -69,11 +72,15 @@ src/
   components/              # UI components (tokens only)
   data/                    # Phase 1 seed catalog fallback
   domain/                  # pure business rules + *.test.ts
-  lib/                     # supabase, razorpay, auth helpers
+  lib/                     # mongo, repositories, razorpay, auth, s3
   styles/                  # global CSS / tokens
-supabase/
-  migrations/              # SQL schema (Phase 2+)
+scripts/
+  seed-mongo.mjs           # indexes + catalog + admin bootstrap
+.github/workflows/         # CI + AWS deploy
+Dockerfile                 # App Runner / ECR image
+DEPLOY.md                  # Atlas, S3, App Runner, GHA secrets
 ```
+
 
 ### Domain modules
 

@@ -3,7 +3,14 @@ import {
   type StockAdjustment,
   type StockAdjustmentReason,
 } from "@/domain/inventory";
-import { createServiceRoleClient } from "@/lib/supabase/server";
+import { isMongoConfigured } from "@/lib/mongo";
+import {
+  findProductById,
+  setProductQuantityCas,
+  decrementProductIfAvailable,
+} from "@/lib/repositories/products";
+import { insertStockMovement } from "@/lib/repositories/stock";
+import type { ClientSession } from "mongodb";
 
 export async function adjustProductStock(input: {
   productId: string;
@@ -11,18 +18,12 @@ export async function adjustProductStock(input: {
   note?: string;
   orderId?: string;
 }): Promise<{ ok: true; quantity: number } | { ok: false; error: string }> {
-  const adminDb = createServiceRoleClient();
-  if (!adminDb) {
-    return { ok: false, error: "Service role client is not configured" };
+  if (!isMongoConfigured()) {
+    return { ok: false, error: "MongoDB is not configured" };
   }
 
-  const { data: product, error: readError } = await adminDb
-    .from("products")
-    .select("id, quantity")
-    .eq("id", input.productId)
-    .single();
-
-  if (readError || !product) {
+  const product = await findProductById(input.productId);
+  if (!product) {
     return { ok: false, error: "Product not found" };
   }
 
@@ -31,98 +32,60 @@ export async function adjustProductStock(input: {
     return result;
   }
 
-  const { data: updated, error: updateError } = await adminDb
-    .from("products")
-    .update({ quantity: result.quantity, updated_at: new Date().toISOString() })
-    .eq("id", input.productId)
-    .eq("quantity", product.quantity)
-    .select("quantity")
-    .maybeSingle();
-
-  if (updateError) {
-    return { ok: false, error: updateError.message };
-  }
-  if (!updated) {
+  const casOk = await setProductQuantityCas(
+    input.productId,
+    product.quantity,
+    result.quantity,
+  );
+  if (!casOk) {
     return { ok: false, error: "Stock changed concurrently; retry" };
   }
 
   const reason: StockAdjustmentReason = result.reason;
-  const { error: movementError } = await adminDb.from("stock_movements").insert({
-    product_id: input.productId,
+  await insertStockMovement({
+    productId: input.productId,
     delta: result.delta,
     reason,
     note: input.note ?? null,
-    order_id: input.orderId ?? null,
+    orderId: input.orderId ?? null,
   });
-
-  if (movementError) {
-    return { ok: false, error: movementError.message };
-  }
 
   return { ok: true, quantity: result.quantity };
 }
 
 /**
  * Conditional sale decrement: succeeds only when quantity >= requested.
- * Used after Razorpay verification.
+ * Used after Razorpay verification (optionally inside a Mongo transaction).
  */
 export async function trySaleDecrement(input: {
   productId: string;
   quantity: number;
   orderId: string;
+  session?: ClientSession;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
-  const adminDb = createServiceRoleClient();
-  if (!adminDb) {
-    return { ok: false, error: "Service role client is not configured" };
+  if (!isMongoConfigured()) {
+    return { ok: false, error: "MongoDB is not configured" };
   }
 
-  const { data: product, error: readError } = await adminDb
-    .from("products")
-    .select("id, quantity")
-    .eq("id", input.productId)
-    .single();
-
-  if (readError || !product) {
-    return { ok: false, error: "Product not found" };
-  }
-
-  const planned = applyStockAdjustment(product.quantity, {
-    kind: "sale",
-    amount: input.quantity,
-  });
-  if (!planned.ok) {
-    return { ok: false, error: planned.error };
-  }
-
-  const { data: updated, error: updateError } = await adminDb
-    .from("products")
-    .update({
-      quantity: planned.quantity,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", input.productId)
-    .gte("quantity", input.quantity)
-    .select("id")
-    .maybeSingle();
-
-  if (updateError) {
-    return { ok: false, error: updateError.message };
-  }
-  if (!updated) {
+  const decremented = await decrementProductIfAvailable(
+    input.productId,
+    input.quantity,
+    input.session,
+  );
+  if (!decremented.ok) {
     return { ok: false, error: "insufficient stock" };
   }
 
-  const { error: movementError } = await adminDb.from("stock_movements").insert({
-    product_id: input.productId,
-    delta: planned.delta,
-    reason: "sale",
-    note: "Verified Razorpay sale",
-    order_id: input.orderId,
-  });
-
-  if (movementError) {
-    return { ok: false, error: movementError.message };
-  }
+  await insertStockMovement(
+    {
+      productId: input.productId,
+      delta: -input.quantity,
+      reason: "sale",
+      note: "Verified Razorpay sale",
+      orderId: input.orderId,
+    },
+    input.session,
+  );
 
   return { ok: true };
 }

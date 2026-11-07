@@ -1,6 +1,15 @@
 import { applyVerifiedPayment } from "@/domain/orders";
 import { trySaleDecrement } from "@/lib/inventory/service";
-import { createServiceRoleClient } from "@/lib/supabase/server";
+import { isMongoConfigured, withTransaction } from "@/lib/mongo";
+import {
+  findOrderById,
+  updateOrderStatus,
+} from "@/lib/repositories/orders";
+import {
+  findAppliedPayment,
+  upsertAppliedPayment,
+} from "@/lib/repositories/payments";
+import { getStockMap } from "@/lib/repositories/products";
 
 export async function applyRazorpayPayment(input: {
   localOrderId: string;
@@ -8,60 +17,38 @@ export async function applyRazorpayPayment(input: {
   paymentId: string;
   signatureValid: boolean;
 }): Promise<{ ok: true; status: string } | { ok: false; error: string }> {
-  const db = createServiceRoleClient();
-  if (!db) {
-    return { ok: false, error: "Service role client is not configured" };
+  if (!isMongoConfigured()) {
+    return { ok: false, error: "MongoDB is not configured" };
   }
 
-  const { data: applied } = await db
-    .from("applied_payments")
-    .select("payment_id")
-    .eq("payment_id", input.paymentId)
-    .maybeSingle();
+  const applied = await findAppliedPayment(input.paymentId);
+  const appliedIds = new Set<string>(applied ? [applied.paymentId] : []);
 
-  const appliedIds = new Set<string>(applied ? [applied.payment_id] : []);
-
-  const { data: orderRow, error: orderError } = await db
-    .from("orders")
-    .select("*, order_items(*)")
-    .eq("id", input.localOrderId)
-    .maybeSingle();
-
-  if (orderError || !orderRow) {
+  const orderRow = await findOrderById(input.localOrderId);
+  if (!orderRow) {
     return { ok: false, error: "Order not found" };
   }
 
   if (
-    orderRow.razorpay_order_id &&
-    orderRow.razorpay_order_id !== input.razorpayOrderId
+    orderRow.razorpayOrderId &&
+    orderRow.razorpayOrderId !== input.razorpayOrderId
   ) {
     return { ok: false, error: "Razorpay order mismatch" };
   }
 
-  const items = (
-    (orderRow.order_items as Array<{
-      product_id: string;
-      name: string;
-      unit_price_paise: number;
-      quantity: number;
-    }>) ?? []
-  ).map((item) => ({
-    productId: item.product_id,
+  const items = orderRow.items.map((item) => ({
+    productId: item.productId,
     name: item.name,
-    unitPricePaise: item.unit_price_paise,
+    unitPricePaise: item.unitPricePaise,
     quantity: item.quantity,
   }));
 
   const domainOrder = {
-    id: orderRow.id as string,
-    status: orderRow.status as
-      | "pending"
-      | "paid"
-      | "failed"
-      | "paid_out_of_stock",
-    totalPaise: orderRow.total_paise as number,
-    razorpayOrderId: orderRow.razorpay_order_id as string | undefined,
-    razorpayPaymentId: orderRow.razorpay_payment_id as string | undefined,
+    id: orderRow._id.toHexString(),
+    status: orderRow.status,
+    totalPaise: orderRow.totalPaise,
+    razorpayOrderId: orderRow.razorpayOrderId ?? undefined,
+    razorpayPaymentId: orderRow.razorpayPaymentId ?? undefined,
     items,
   };
 
@@ -74,13 +61,7 @@ export async function applyRazorpayPayment(input: {
       appliedPaymentIds: appliedIds,
     });
     if (!decision.ok) return decision;
-    await db
-      .from("orders")
-      .update({
-        status: decision.order.status,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", orderRow.id);
+    await updateOrderStatus(domainOrder.id, { status: decision.order.status });
     return { ok: true, status: decision.order.status };
   }
 
@@ -88,19 +69,9 @@ export async function applyRazorpayPayment(input: {
     return { ok: true, status: domainOrder.status };
   }
 
-  // Pre-check all lines so we never partially decrement.
   const productIds = items.map((item) => item.productId);
-  const { data: stockRows } = await db
-    .from("products")
-    .select("id, quantity")
-    .in("id", productIds);
-
-  const stockMap = new Map(
-    (stockRows ?? []).map((row: { id: string; quantity: number }) => [
-      row.id,
-      row.quantity,
-    ]),
-  );
+  const stockMapObj = await getStockMap(productIds);
+  const stockMap = new Map(Object.entries(stockMapObj));
 
   const stockOk = items.every(
     (item) => (stockMap.get(item.productId) ?? 0) >= item.quantity,
@@ -120,43 +91,45 @@ export async function applyRazorpayPayment(input: {
     return { ok: true, status: decision.order.status };
   }
 
-  if (decision.shouldDecrementStock) {
-    for (const item of items) {
-      const decrement = await trySaleDecrement({
-        productId: item.productId,
-        quantity: item.quantity,
-        orderId: domainOrder.id,
-      });
-      if (!decrement.ok) {
-        await db
-          .from("orders")
-          .update({
-            status: "paid_out_of_stock",
-            razorpay_payment_id: input.paymentId,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", domainOrder.id);
-        await db.from("applied_payments").upsert({
-          payment_id: input.paymentId,
-          order_id: domainOrder.id,
-        });
-        return { ok: true, status: "paid_out_of_stock" };
-      }
-    }
+  if (!decision.shouldDecrementStock) {
+    await upsertAppliedPayment(input.paymentId, domainOrder.id);
+    await updateOrderStatus(domainOrder.id, {
+      status: decision.order.status,
+      razorpayPaymentId: input.paymentId,
+    });
+    return { ok: true, status: decision.order.status };
   }
 
-  await db.from("applied_payments").upsert({
-    payment_id: input.paymentId,
-    order_id: domainOrder.id,
-  });
-  await db
-    .from("orders")
-    .update({
-      status: decision.order.status,
-      razorpay_payment_id: input.paymentId,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", domainOrder.id);
-
-  return { ok: true, status: decision.order.status };
+  try {
+    await withTransaction(async (session) => {
+      for (const item of items) {
+        const decrement = await trySaleDecrement({
+          productId: item.productId,
+          quantity: item.quantity,
+          orderId: domainOrder.id,
+          session,
+        });
+        if (!decrement.ok) {
+          throw new Error("insufficient stock");
+        }
+      }
+      await upsertAppliedPayment(input.paymentId, domainOrder.id, session);
+      await updateOrderStatus(
+        domainOrder.id,
+        {
+          status: "paid",
+          razorpayPaymentId: input.paymentId,
+        },
+        session,
+      );
+    });
+    return { ok: true, status: "paid" };
+  } catch {
+    await upsertAppliedPayment(input.paymentId, domainOrder.id);
+    await updateOrderStatus(domainOrder.id, {
+      status: "paid_out_of_stock",
+      razorpayPaymentId: input.paymentId,
+    });
+    return { ok: true, status: "paid_out_of_stock" };
+  }
 }

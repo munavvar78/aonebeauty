@@ -1,24 +1,30 @@
 import type { NextConfig } from "next";
 
-function supabaseHostname(): string {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!url) return "**.supabase.co";
+const remotePatterns: NonNullable<NextConfig["images"]>["remotePatterns"] = [
+  {
+    protocol: "https",
+    hostname: "**.amazonaws.com",
+    pathname: "/**",
+  },
+];
+
+const publicBase = process.env.S3_PUBLIC_BASE_URL;
+if (publicBase) {
   try {
-    return new URL(url).hostname;
+    remotePatterns.push({
+      protocol: "https",
+      hostname: new URL(publicBase).hostname,
+      pathname: "/**",
+    });
   } catch {
-    return "**.supabase.co";
+    // ignore invalid S3_PUBLIC_BASE_URL at config time
   }
 }
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   images: {
-    remotePatterns: [
-      {
-        protocol: "https",
-        hostname: supabaseHostname(),
-        pathname: "/storage/v1/object/public/**",
-      },
-    ],
+    remotePatterns,
   },
 };
 
