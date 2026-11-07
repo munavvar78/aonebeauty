@@ -38,7 +38,7 @@ Aone Beauty is a small, aesthetic beauty e-commerce storefront with:
 | Payments | Razorpay (INR, paise) |
 | Tests | Vitest + Testing Library |
 | Local | `next dev` |
-| Host | Docker → Amazon ECR → AWS App Runner |
+| Host | Docker → Amazon ECR → ECS Fargate + ALB |
 | CI/CD | GitHub Actions (`ci.yml`, `deploy.yml`) |
 
 ## Brand and visual rules
@@ -77,8 +77,8 @@ src/
 scripts/
   seed-mongo.mjs           # indexes + catalog + admin bootstrap
 .github/workflows/         # CI + AWS deploy
-Dockerfile                 # App Runner / ECR image
-DEPLOY.md                  # Atlas, S3, App Runner, GHA secrets
+Dockerfile                 # ECS / ECR image
+DEPLOY.md                  # Atlas, S3, ECS Fargate, GHA secrets
 ```
 
 

@@ -11,7 +11,7 @@ COPY . .
 # Build-time placeholders for Next public env (runtime overrides App Runner env)
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NEXT_PUBLIC_SITE_URL=https://example.com
-RUN npm run build
+RUN mkdir -p public && npm run build
 
 FROM node:22-alpine AS runner
 WORKDIR /app

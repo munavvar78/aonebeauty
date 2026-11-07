@@ -1,55 +1,70 @@
-# Deploy Aone Beauty (MongoDB + AWS)
+# Deploy Aone Beauty (MongoDB + AWS ECS)
+
+## Stack
+
+- **MongoDB Atlas** — data
+- **Auth.js** — admin login
+- **S3** — product images
+- **ECR** — Docker images
+- **ECS Fargate + ALB** — run the site (standard; not App Runner)
+- **GitHub Actions** — CI + deploy
 
 ## 1. MongoDB Atlas
 
-1. Create a free/shared cluster.
-2. Network Access → allow App Runner egress (or `0.0.0.0/0` for bootstrap).
-3. Database Access → create a user.
-4. Copy the SRV URI into `MONGODB_URI`.
-5. Locally:
-
-```bash
-# .env.local must include MONGODB_URI, ADMIN_EMAIL, ADMIN_PASSWORD, AUTH_SECRET
-npm run db:seed
-```
+1. Create cluster + DB user.
+2. Network Access → allow `0.0.0.0/0` (needed for ECS tasks).
+3. Put URI in `MONGODB_URI`.
+4. Locally: `npm run db:seed`
 
 ## 2. S3 product images
 
-1. Create bucket (e.g. `aonebeauty-product-images`) in `ap-south-1`.
-2. Block public access off **or** use a bucket policy for `s3:GetObject` on `/*`.
-3. IAM user/role needs `s3:PutObject` (+ `s3:PutObjectAcl` if using `public-read`).
-4. Set `AWS_REGION`, `S3_BUCKET`, and credentials (or App Runner instance role).
+1. Bucket in the same region you use for keys (this project: `us-east-1`).
+2. Public `s3:GetObject` bucket policy on `/*`.
+3. IAM user with `s3:PutObject` / `s3:GetObject` on the bucket.
+4. Set `AWS_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`.
 
-## 3. Auth
+## 3. ECR
 
-1. `openssl rand -base64 32` → `AUTH_SECRET`
-2. `ADMIN_EMAIL` must match the seeded admin email
-3. Login at `/admin`
+Repository example: `munavvar/aonebeauty`  
+URI: `ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/munavvar/aonebeauty`
 
-## 4. Razorpay
+## 4. ECS Fargate + ALB
 
-Set `NEXT_PUBLIC_RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, optional webhook secret.  
-Webhook URL: `https://YOUR_APP_RUNNER_URL/api/payments/webhook`
+1. Cluster (Fargate), e.g. `aonebeauty`
+2. Task definition — container port **3000**, env from `.env.local`
+3. Service + **internet-facing ALB**
+   - Listener **80** → target port **3000**
+   - Health check `/`
+   - ALB security group: inbound HTTP 80 from `0.0.0.0/0`
+4. Set task env `NEXT_PUBLIC_SITE_URL=http://YOUR-ALB-DNS`
+5. Force new deployment after changing env
 
-## 5. Docker + ECR + App Runner
+## 5. GitHub Actions secrets
 
-1. Create ECR repository (name → GitHub secret `ECR_REPOSITORY`).
-2. Create App Runner service from that ECR image, port **3000**.
-3. Add runtime env/secrets on the service: Mongo, Auth, S3, Razorpay, `NEXT_PUBLIC_SITE_URL`.
-4. Copy service ARN → GitHub secret `APP_RUNNER_SERVICE_ARN`.
+Repo → **Settings → Secrets and variables → Actions**:
 
-## 6. GitHub Actions secrets
-
-| Secret | Purpose |
+| Secret | Example / notes |
 | --- | --- |
-| `AWS_ACCESS_KEY_ID` | Deploy IAM user |
+| `AWS_ACCESS_KEY_ID` | Deploy IAM user (ECR + ECS) |
 | `AWS_SECRET_ACCESS_KEY` | Deploy IAM user |
-| `AWS_REGION` | e.g. `ap-south-1` |
-| `ECR_REPOSITORY` | ECR repo name |
-| `APP_RUNNER_SERVICE_ARN` | Triggers redeploy after push |
+| `AWS_REGION` | `us-east-1` |
+| `ECR_REPOSITORY` | `munavvar/aonebeauty` |
+| `ECS_CLUSTER` | cluster name (e.g. `aonebeauty`) |
+| `ECS_SERVICE` | service name (e.g. `aonebeauty-web`) |
+| `ECS_TASK_DEFINITION` | task **family** name (e.g. `aonebeauty`) |
 
-CI (`ci.yml`) runs lint, test, build on every PR/push to `main`.  
-CD (`deploy.yml`) builds/pushes the image and starts an App Runner deployment.
+Deploy IAM user needs at least:
+
+- `AmazonEC2ContainerRegistryPowerUser` (or tighter ECR push)
+- ECS: `RegisterTaskDefinition`, `UpdateService`, `DescribeTaskDefinition`, `DescribeServices`
+
+CI (`ci.yml`): lint, test, build on PR/push.  
+CD (`deploy.yml`): build/push image → new task definition revision → update ECS service.
+
+## 6. Razorpay (optional)
+
+Set keys in the task definition env.  
+Webhook URL: `http://YOUR-ALB-DNS/api/payments/webhook` (use HTTPS when you add ACM).
 
 ## Smoke checklist
 
@@ -57,4 +72,4 @@ CD (`deploy.yml`) builds/pushes the image and starts an App Runner deployment.
 - [ ] Admin login works
 - [ ] Product edit + stock adjust
 - [ ] Image upload appears on storefront
-- [ ] Checkout (Razorpay test) + order appears in admin
+- [ ] Checkout (Razorpay test) + order in admin
